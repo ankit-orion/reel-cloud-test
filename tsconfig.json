@@ -1,0 +1,14 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "types": [
+      "jest"
+    ],
+    "allowImportingTsExtensions": true
+  },
+  "exclude": [
+    "node_modules",
+    "server"
+  ]
+}

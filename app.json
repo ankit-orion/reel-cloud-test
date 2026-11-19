@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Rock Paper Scissors",
+    "slug": "pixel-rps",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#7fdcf2",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#7fdcf2",
+        "foregroundImage": "./assets/android-icon-foreground.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "backgroundColor": "#7fdcf2",
+      "themeColor": "#7fdcf2"
+    },
+    "plugins": [
+      "expo-font"
+    ]
+  }
+}
