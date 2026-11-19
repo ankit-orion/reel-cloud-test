@@ -1,5 +1,5 @@
 {
-  "name": "rps-server",
+  "name": "rock-paper-scissors-server",
   "version": "1.0.0",
   "private": true,
   "type": "module",

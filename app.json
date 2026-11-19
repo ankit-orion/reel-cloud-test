@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Rock Paper Scissors",
-    "slug": "pixel-rps",
+    "slug": "rock-paper-scissors",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
