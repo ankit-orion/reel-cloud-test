@@ -4,13 +4,14 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { nameProblem, type ClientMessage, type ServerMessage } from '../shared/protocol.ts';
 import { isMove } from '../shared/rules.ts';
+import type { Db } from './db.ts';
 import { RoomError, Rooms, type RoomTimings } from './rooms.ts';
 import { NameTakenError, Store } from './store.ts';
 
 export interface ServerOptions extends Partial<RoomTimings> {
   port: number;
-  /** SQLite file path, or ':memory:'. */
-  dbPath: string;
+  /** Where player records are kept. The server closes it when it shuts down. */
+  db: Db;
   /** How often connections are pinged; one missed ping drops the connection. */
   heartbeatMs?: number;
 }
@@ -53,7 +54,7 @@ const isCount = (value: unknown): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0;
 
 export async function startServer(options: ServerOptions) {
-  const store = new Store(options.dbPath);
+  const store = await Store.open(options.db);
   const sockets = new Map<string, WebSocket>();
 
   const sendTo = (playerId: string, message: ServerMessage) => {
@@ -74,9 +75,9 @@ export async function startServer(options: ServerOptions) {
 
   // ---- HTTP: registration, profile, leaderboard, computer-match reports ----
 
-  const authenticate = (request: IncomingMessage): string => {
+  const authenticate = async (request: IncomingMessage): Promise<string> => {
     const header = request.headers.authorization ?? '';
-    const id = header.startsWith('Bearer ') ? store.idForToken(header.slice(7)) : null;
+    const id = header.startsWith('Bearer ') ? await store.idForToken(header.slice(7)) : null;
     if (!id) throw new HttpError(401, 'Sign in again');
     return id;
   };
@@ -93,26 +94,26 @@ export async function startServer(options: ServerOptions) {
       const problem = nameProblem(name);
       if (problem) throw new HttpError(400, problem);
       try {
-        const { token, id } = store.register(name);
-        return { token, profile: store.profile(id) };
+        const { token, id } = await store.register(name);
+        return { token, profile: await store.profile(id) };
       } catch (error) {
         if (error instanceof NameTakenError) throw new HttpError(409, 'That name is taken');
         throw error;
       }
     }
 
-    if (key === 'GET /api/me') return { profile: store.profile(authenticate(request)) };
+    if (key === 'GET /api/me') return { profile: await store.profile(await authenticate(request)) };
 
-    if (key === 'GET /api/leaderboard') return { entries: store.leaderboard(LEADERBOARD_SIZE) };
+    if (key === 'GET /api/leaderboard') return { entries: await store.leaderboard(LEADERBOARD_SIZE) };
 
     if (key === 'POST /api/cpu-matches') {
-      const id = authenticate(request);
+      const id = await authenticate(request);
       const { wins, losses } = await readJson(request);
       if (!isCount(wins) || !isCount(losses) || wins + losses > MAX_CPU_MATCHES_PER_REPORT) {
         throw new HttpError(400, 'Invalid match counts');
       }
-      store.recordCpuMatches(id, wins, losses);
-      return { profile: store.profile(id) };
+      await store.recordCpuMatches(id, wins, losses);
+      return { profile: await store.profile(id) };
     }
 
     throw new HttpError(404, 'Not found');
@@ -150,13 +151,20 @@ export async function startServer(options: ServerOptions) {
   const wss = new WebSocketServer({ server: http, path: '/ws', maxPayload: MAX_BODY_BYTES });
   const alive = new WeakSet<WebSocket>();
 
-  const act = (playerId: string, message: ClientMessage) => {
+  /** The player as they sit down in a room, with any match they just finished already counted. */
+  const entrant = async (playerId: string) => {
+    await rooms.settled();
+    const { id, name, score } = await store.profile(playerId);
+    return { id, name, score };
+  };
+
+  const act = async (playerId: string, message: ClientMessage) => {
     switch (message.t) {
       case 'create':
-        return rooms.create(playerId);
+        return rooms.create(await entrant(playerId));
       case 'join':
         if (typeof message.code !== 'string') throw new RoomError('Enter a room code');
-        return rooms.join(playerId, message.code);
+        return rooms.join(await entrant(playerId), message.code);
       case 'pick':
         if (!isMove(message.move)) throw new RoomError('Unknown move');
         return rooms.pick(playerId, message.move);
@@ -171,11 +179,13 @@ export async function startServer(options: ServerOptions) {
 
   wss.on('connection', (socket) => {
     let playerId: string | null = null;
-    const reply = (message: ServerMessage) => socket.send(JSON.stringify(message));
+    const reply = (message: ServerMessage) => {
+      if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
+    };
     alive.add(socket);
     socket.on('pong', () => alive.add(socket));
 
-    socket.on('message', (data) => {
+    const handle = async (data: unknown) => {
       let message: ClientMessage;
       try {
         message = JSON.parse(String(data));
@@ -185,23 +195,37 @@ export async function startServer(options: ServerOptions) {
       }
 
       if (playerId === null) {
-        const id = message.t === 'hello' && typeof message.token === 'string' ? store.idForToken(message.token) : null;
+        const id =
+          message.t === 'hello' && typeof message.token === 'string' ? await store.idForToken(message.token) : null;
         if (!id) return socket.close(CLOSE_BAD_TOKEN, 'Sign in again');
+        const profile = await store.profile(id);
+        // The connection may have gone while the database answered; then there is nobody to sign in.
+        if (socket.readyState !== socket.OPEN) return;
         // One live connection per player: the newest device wins.
         sockets.get(id)?.close(CLOSE_REPLACED, 'Signed in elsewhere');
         playerId = id;
         sockets.set(id, socket);
-        reply({ t: 'profile', profile: store.profile(id) });
+        reply({ t: 'profile', profile });
         return rooms.playerConnected(id);
       }
 
       try {
-        act(playerId, message);
+        await act(playerId, message);
       } catch (error) {
         if (error instanceof RoomError) return reply({ t: 'error', message: error.message });
-        console.error(error);
-        reply({ t: 'error', message: 'Something went wrong' });
+        throw error;
       }
+    };
+
+    // One message at a time per connection, in the order sent, even when one waits on the database.
+    let queue = Promise.resolve();
+    socket.on('message', (data) => {
+      queue = queue
+        .then(() => handle(data))
+        .catch((error) => {
+          console.error(error);
+          reply({ t: 'error', message: 'Something went wrong' });
+        });
     });
 
     socket.on('close', () => {
@@ -235,7 +259,8 @@ export async function startServer(options: ServerOptions) {
       for (const socket of wss.clients) socket.terminate();
       await new Promise((resolve) => wss.close(resolve));
       await new Promise((resolve) => http.close(resolve));
-      store.close();
+      await rooms.settled();
+      await store.close();
     },
   };
 }

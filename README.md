@@ -80,15 +80,30 @@ for a server on the internet, since the player's sign-in token travels with ever
 
 ## Putting the server online
 
-Friends outside your Wi-Fi need the server on a public host. Any host that runs Node 22.18+ and
-allows WebSockets will do:
+Friends outside your Wi-Fi need the server on a public host. The repository is set up for
+**Render's free plan** with player records in a **free Neon Postgres database**. Both can be set
+up from a phone browser.
 
-- Deploy the repository (the server imports `shared/`), with start command
-  `npm start --prefix server` after `npm install --prefix server`.
-- Set `PORT` if the host requires it, and set `DATA_DIR` to a folder on a **persistent disk**.
-  Player records are a SQLite file in that folder; on a host with a temporary filesystem they are
-  lost on every restart.
-- Serve it over HTTPS, then build the app with `EXPO_PUBLIC_SERVER_URL=https://your-host`.
+1. **Database** – create a free account and a project at [neon.com](https://neon.com), and copy the
+   project's connection string (it starts with `postgresql://`). It contains the database password:
+   paste it only into Render.
+2. **Server** – at [render.com](https://render.com), sign in with GitHub and choose
+   **New → Blueprint**, then pick this repository. Render reads `render.yaml`, asks for
+   `DATABASE_URL` (paste the connection string), and deploys.
+3. **App** – Render shows the server's address (`https://<name>.onrender.com`). Enter it in the
+   app's **Game server** box, or build the app with `EXPO_PUBLIC_SERVER_URL` set to it.
+
+What to expect on the free plan: the server sleeps after 15 minutes without activity and takes
+about a minute to wake when someone next opens the app, so the first action after a quiet spell
+can fail once with "try again in a minute". A match in progress keeps the server awake.
+
+Why a separate database: a free Render service has no disk that survives a restart, and Render's
+own free Postgres is deleted 30 days after creation.
+
+Any other host that runs Node 22.18+ and allows WebSockets works too: install with
+`npm ci --prefix server --omit=dev`, start with `npm start --prefix server`, and set `DATABASE_URL`.
+Without `DATABASE_URL` the server keeps its own embedded database in `DATA_DIR` (default
+`server/data/`), which is what local development uses and needs a disk that persists.
 
 Before a public launch, add rate limiting to `POST /api/register` and a filter for offensive
 names; neither exists yet. A player is tied to the device that registered it (a secret token kept
@@ -100,6 +115,7 @@ Live rooms are held in memory: restarting the server ends matches in progress wi
 ```bash
 npm test               # rules, tier scale, name rules, sprite data
 npm run test:server    # server: matches, scoring, leaderboard, forfeits, reconnects
+                       # (set TEST_DATABASE_URL to run them against a real Postgres server)
 npm run typecheck
 npx expo lint
 ```
@@ -114,7 +130,7 @@ npx expo lint
 | `src/screens/`| Name entry, home, invite lobby, leaderboard, profile                       |
 | `src/net/`    | HTTP client, the saved player, the WebSocket connection                    |
 | `shared/`     | Rules, score/tier scale and wire protocol, used by both app and server     |
-| `server/`     | HTTP + WebSocket server with SQLite storage                                |
+| `server/`     | HTTP + WebSocket server; player records in Postgres                        |
 
 The font is Press Start 2P (SIL Open Font License). All sprites are original and live in
 `src/pixel/sprites.ts`.

@@ -7,15 +7,18 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning index.ts",
-    "test": "node --disable-warning=ExperimentalWarning --test",
+    "start": "node index.ts",
+    "test": "node --test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.17",
+    "pg": "^8.23.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.0",
     "typescript": "~6.0.3"
   }

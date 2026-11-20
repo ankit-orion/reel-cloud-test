@@ -1,11 +1,10 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
 
 import type { LeaderboardEntry, Profile } from '../shared/protocol.ts';
-import { scoreAfterMatch } from '../shared/tiers.ts';
+import { LOSS_POINTS, WIN_POINTS } from '../shared/tiers.ts';
+import type { Db } from './db.ts';
 
 interface PlayerRow {
-  seq: number;
   id: string;
   name: string;
   score: number;
@@ -20,29 +19,26 @@ export class NameTakenError extends Error {}
 /** Names nobody may register, so no player can pose as the computer opponent. */
 const RESERVED_NAMES = new Set(['cpu', 'computer']);
 
+// Only players with at least one match against a real player are ranked.
+const RANKED = 'pvp_wins + pvp_losses > 0';
 // Leaderboard order: score, then wins, then whoever registered first.
-const AHEAD_OF = `
-  (score > :score
-    OR (score = :score AND pvp_wins > :wins)
-    OR (score = :score AND pvp_wins = :wins AND seq < :seq))`;
+const BOARD_ORDER = 'score DESC, pvp_wins DESC, seq ASC';
 
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
 
-export interface ScoreChange {
-  before: number;
-  after: number;
-}
-
 /** All persistent state: players, their records and their scores. */
 export class Store {
-  private db: DatabaseSync;
+  private db: Db;
 
-  constructor(path: string) {
-    this.db = new DatabaseSync(path);
-    this.db.exec(`
-      PRAGMA journal_mode = WAL;
+  private constructor(db: Db) {
+    this.db = db;
+  }
+
+  /** Wraps a database, creating the table on first use. */
+  static async open(db: Db): Promise<Store> {
+    await db.query(`
       CREATE TABLE IF NOT EXISTS players (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        seq SERIAL PRIMARY KEY,
         id TEXT NOT NULL UNIQUE,
         name TEXT NOT NULL,
         name_key TEXT NOT NULL UNIQUE,
@@ -52,55 +48,53 @@ export class Store {
         pvp_losses INTEGER NOT NULL DEFAULT 0,
         cpu_wins INTEGER NOT NULL DEFAULT 0,
         cpu_losses INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS players_by_score ON players (score DESC, pvp_wins DESC, seq ASC);
-    `);
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+    await db.query(`CREATE INDEX IF NOT EXISTS players_by_score ON players (${BOARD_ORDER})`);
+    return new Store(db);
   }
 
   close() {
-    this.db.close();
+    return this.db.close();
   }
 
   /** Creates a player and returns the secret token their device signs in with. */
-  register(name: string): { token: string; id: string } {
+  async register(name: string): Promise<{ token: string; id: string }> {
     const key = name.toLowerCase();
     if (RESERVED_NAMES.has(key)) throw new NameTakenError();
     const id = randomUUID();
     const token = randomBytes(32).toString('hex');
-    try {
-      this.db
-        .prepare('INSERT INTO players (id, name, name_key, token_hash, created_at) VALUES (?, ?, ?, ?, ?)')
-        .run(id, name, key, hashToken(token), Date.now());
-    } catch (error) {
-      if (String(error).includes('players.name_key')) throw new NameTakenError();
-      throw error;
-    }
+    const created = await this.db.query(
+      `INSERT INTO players (id, name, name_key, token_hash) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (name_key) DO NOTHING RETURNING id`,
+      [id, name, key, hashToken(token)],
+    );
+    if (created.length === 0) throw new NameTakenError();
     return { token, id };
   }
 
-  idForToken(token: string): string | null {
-    const row = this.db.prepare('SELECT id FROM players WHERE token_hash = ?').get(hashToken(token)) as
-      | { id: string }
-      | undefined;
-    return row?.id ?? null;
+  async idForToken(token: string): Promise<string | null> {
+    const rows = await this.db.query<{ id: string }>('SELECT id FROM players WHERE token_hash = $1', [
+      hashToken(token),
+    ]);
+    return rows[0]?.id ?? null;
   }
 
-  private row(id: string): PlayerRow {
-    const row = this.db.prepare('SELECT * FROM players WHERE id = ?').get(id) as PlayerRow | undefined;
+  async profile(id: string): Promise<Profile> {
+    const rows = await this.db.query<PlayerRow & { rank: number | null }>(
+      `SELECT p.*,
+         CASE WHEN p.pvp_wins + p.pvp_losses > 0 THEN (
+           SELECT COUNT(*)::int + 1 FROM players o
+           WHERE o.pvp_wins + o.pvp_losses > 0
+             AND (o.score > p.score
+               OR (o.score = p.score AND o.pvp_wins > p.pvp_wins)
+               OR (o.score = p.score AND o.pvp_wins = p.pvp_wins AND o.seq < p.seq))
+         ) END AS rank
+       FROM players p WHERE p.id = $1`,
+      [id],
+    );
+    const row = rows[0];
     if (!row) throw new Error(`Unknown player ${id}`);
-    return row;
-  }
-
-  profile(id: string): Profile {
-    const row = this.row(id);
-    let rank: number | null = null;
-    if (row.pvp_wins + row.pvp_losses > 0) {
-      const ahead = this.db
-        .prepare(`SELECT COUNT(*) AS n FROM players WHERE pvp_wins + pvp_losses > 0 AND ${AHEAD_OF}`)
-        .get({ score: row.score, wins: row.pvp_wins, seq: row.seq }) as { n: number };
-      rank = ahead.n + 1;
-    }
     return {
       id: row.id,
       name: row.name,
@@ -109,18 +103,16 @@ export class Store {
       pvpLosses: row.pvp_losses,
       cpuWins: row.cpu_wins,
       cpuLosses: row.cpu_losses,
-      rank,
+      rank: row.rank,
     };
   }
 
-  /** Top players by score. Only players with at least one match against a real player appear. */
-  leaderboard(limit: number): LeaderboardEntry[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM players WHERE pvp_wins + pvp_losses > 0
-         ORDER BY score DESC, pvp_wins DESC, seq ASC LIMIT ?`,
-      )
-      .all(limit) as unknown as PlayerRow[];
+  /** Top players by score. */
+  async leaderboard(limit: number): Promise<LeaderboardEntry[]> {
+    const rows = await this.db.query<PlayerRow>(
+      `SELECT * FROM players WHERE ${RANKED} ORDER BY ${BOARD_ORDER} LIMIT $1`,
+      [limit],
+    );
     return rows.map((row, index) => ({
       rank: index + 1,
       id: row.id,
@@ -131,34 +123,27 @@ export class Store {
     }));
   }
 
-  /** Records a finished match between two real players. The only place score changes. */
-  recordPvpMatch(winnerId: string, loserId: string): { winner: ScoreChange; loser: ScoreChange } {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const winner = this.row(winnerId);
-      const loser = this.row(loserId);
-      const change = {
-        winner: { before: winner.score, after: scoreAfterMatch(winner.score, true) },
-        loser: { before: loser.score, after: scoreAfterMatch(loser.score, false) },
-      };
-      this.db
-        .prepare('UPDATE players SET score = ?, pvp_wins = pvp_wins + 1 WHERE id = ?')
-        .run(change.winner.after, winnerId);
-      this.db
-        .prepare('UPDATE players SET score = ?, pvp_losses = pvp_losses + 1 WHERE id = ?')
-        .run(change.loser.after, loserId);
-      this.db.exec('COMMIT');
-      return change;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+  /**
+   * Records a finished match between two real players. The only place score changes, and one
+   * statement, so both players' records move together or not at all.
+   */
+  async recordPvpMatch(winnerId: string, loserId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE players SET
+         score = CASE WHEN id = $1 THEN score + $3 ELSE GREATEST(0, score - $4) END,
+         pvp_wins = pvp_wins + CASE WHEN id = $1 THEN 1 ELSE 0 END,
+         pvp_losses = pvp_losses + CASE WHEN id = $2 THEN 1 ELSE 0 END
+       WHERE id IN ($1, $2)`,
+      [winnerId, loserId, WIN_POINTS, LOSS_POINTS],
+    );
   }
 
   /** Adds matches against the computer to a profile. Never touches score. */
-  recordCpuMatches(id: string, wins: number, losses: number) {
-    this.db
-      .prepare('UPDATE players SET cpu_wins = cpu_wins + ?, cpu_losses = cpu_losses + ? WHERE id = ?')
-      .run(wins, losses, id);
+  async recordCpuMatches(id: string, wins: number, losses: number): Promise<void> {
+    await this.db.query('UPDATE players SET cpu_wins = cpu_wins + $2, cpu_losses = cpu_losses + $3 WHERE id = $1', [
+      id,
+      wins,
+      losses,
+    ]);
   }
 }

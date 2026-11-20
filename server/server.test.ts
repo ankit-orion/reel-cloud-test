@@ -13,6 +13,7 @@ import type {
 import type { Move } from '../shared/rules.ts';
 import { LOSS_POINTS, WIN_POINTS } from '../shared/tiers.ts';
 import { startServer } from './app.ts';
+import { openEmbedded, openPostgres } from './db.ts';
 
 const FORFEIT_GRACE_MS = 300;
 
@@ -20,7 +21,12 @@ let server: Awaited<ReturnType<typeof startServer>>;
 let base: string;
 
 before(async () => {
-  server = await startServer({ port: 0, dbPath: ':memory:', forfeitGraceMs: FORFEIT_GRACE_MS });
+  // By default the tests use the embedded database. Set TEST_DATABASE_URL to run the same tests
+  // against a real Postgres server; its players table is dropped first.
+  const url = process.env.TEST_DATABASE_URL;
+  const db = url ? openPostgres(url) : await openEmbedded(null);
+  if (url) await db.query('DROP TABLE IF EXISTS players');
+  server = await startServer({ port: 0, db, forfeitGraceMs: FORFEIT_GRACE_MS });
   base = `http://127.0.0.1:${server.port}`;
 });
 after(() => server.close());
@@ -95,6 +101,11 @@ class Client {
 
   error() {
     return this.next((m) => m.t === 'error' && m.message);
+  }
+
+  /** The record the server sends once a finished match has been written to the database. */
+  savedProfile() {
+    return this.next((m) => m.t === 'profile' && m.profile);
   }
 
   close() {
@@ -174,7 +185,11 @@ test('a friend match is scored, ranked and keeps picks secret', async () => {
   assert.deepEqual(bobEnd.result, { youWon: false, reason: 'score', scoreBefore: 0, scoreAfter: 0 });
   assert.equal(aliceEnd.rounds.length, 4);
 
+  // Each player is sent their new record once it is saved, and it matches what the API reports.
+  const [pushedToWinner, pushedToLoser] = [await alice.savedProfile(), await bob.savedProfile()];
   const [winner, loser] = [await me(a.token), await me(b.token)];
+  assert.deepEqual(pushedToWinner, winner);
+  assert.deepEqual(pushedToLoser, loser);
   assert.deepEqual([winner.score, winner.pvpWins, winner.pvpLosses], [WIN_POINTS, 1, 0]);
   assert.deepEqual([loser.score, loser.pvpWins, loser.pvpLosses], [0, 0, 1]);
   assert.ok(winner.rank! < loser.rank!);
@@ -230,6 +245,7 @@ test('leaving mid-match forfeits it', async () => {
   const afterLeave = await alice.room((room) => !room.opponent!.connected);
   assert.equal(afterLeave.status, 'over');
 
+  await alice.savedProfile();
   alice.send({ t: 'rematch' });
   assert.equal(await alice.error(), 'Your opponent has left');
   assert.equal((await me(a.token)).pvpWins, 1);
@@ -261,6 +277,7 @@ test('staying disconnected past the grace period forfeits', async () => {
   await bob.close();
   const end = await alice.room((room) => room.status === 'over');
   assert.deepEqual([end.result!.youWon, end.result!.reason], [true, 'forfeit']);
+  await alice.savedProfile();
   assert.equal((await me(a.token)).score, WIN_POINTS);
   assert.equal((await me(b.token)).pvpLosses, 1);
 
@@ -310,12 +327,14 @@ test('room errors are reported, and score never drops below zero', async () => {
 
   // Alice loses a match while on zero: still zero, and a later win starts from there.
   for (let round = 1; round <= 3; round++) await playRound(alice, bob, 'scissors', 'rock', round);
+  await alice.savedProfile();
   assert.equal((await me(a.token)).score, 0);
   alice.send({ t: 'rematch' });
   bob.send({ t: 'rematch' });
   await alice.room((room) => room.status === 'playing');
   await bob.room((room) => room.status === 'playing');
   for (let round = 1; round <= 3; round++) await playRound(alice, bob, 'rock', 'scissors', round);
+  await alice.savedProfile();
   assert.equal((await me(a.token)).score, WIN_POINTS);
   assert.equal(WIN_POINTS > LOSS_POINTS, true);
   await Promise.all([alice.close(), bob.close(), carol.close()]);

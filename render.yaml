@@ -1,0 +1,18 @@
+# Render Blueprint: runs the game server on Render's free plan.
+# In Render choose New > Blueprint, pick this repository, and paste the database
+# connection string when asked for DATABASE_URL. See "Putting the server online" in the README.
+services:
+  - type: web
+    name: rock-paper-scissors-server
+    runtime: node
+    plan: free
+    buildCommand: npm ci --prefix server --omit=dev
+    startCommand: npm start --prefix server
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.23.5
+      # Player records live in a hosted Postgres database, because a free Render service has no
+      # disk of its own that survives a restart. Asked for when the Blueprint is created.
+      - key: DATABASE_URL
+        sync: false

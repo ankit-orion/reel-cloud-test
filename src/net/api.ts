@@ -27,7 +27,8 @@ async function request<T>(method: 'GET' | 'POST', path: string, token?: string, 
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
-    throw new ApiError(0, 'Cannot reach the server');
+    // A free-hosted server sleeps when idle and takes about a minute to wake on the first request.
+    throw new ApiError(0, 'Cannot reach the server. It may be waking up: try again in a minute.');
   } finally {
     clearTimeout(timer);
   }

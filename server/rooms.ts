@@ -2,7 +2,20 @@ import { randomInt } from 'node:crypto';
 
 import { ROOM_CODE_LENGTH, type RoomPlayer, type RoomSnapshot, type ServerMessage } from '../shared/protocol.ts';
 import { WINS_TO_TAKE_MATCH, judge, type Move } from '../shared/rules.ts';
-import type { ScoreChange, Store } from './store.ts';
+import { scoreAfterMatch } from '../shared/tiers.ts';
+import type { Store } from './store.ts';
+
+/** Who is sitting down: read from the store by the caller, just before they take a seat. */
+export interface RoomEntrant {
+  id: string;
+  name: string;
+  score: number;
+}
+
+interface ScoreChange {
+  before: number;
+  after: number;
+}
 
 // No 0/O, 1/I/L: codes get read aloud and typed on phones.
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -19,6 +32,11 @@ export interface RoomTimings {
 interface Seat {
   playerId: string;
   name: string;
+  /**
+   * The player's score. Only matches change score and a player sits in one room at a time, so
+   * while they are here this copy stays right and the room never has to wait on the database.
+   */
+  score: number;
   pick: Move | null;
   roundWins: number;
   wantsRematch: boolean;
@@ -42,10 +60,14 @@ export class RoomError extends Error {}
 /**
  * Live friend matches. Rooms belong to players, not to sockets: a dropped
  * connection keeps its seat and gets the full room state again on reconnect.
+ *
+ * Everything here happens in memory and at once; finished matches are written
+ * to the store in the background, in order.
  */
 export class Rooms {
   private rooms = new Map<string, Room>();
   private roomOfPlayer = new Map<string, Room>();
+  private writes: Promise<void> = Promise.resolve();
   private store: Store;
   private timings: RoomTimings;
   private isConnected: (playerId: string) => boolean;
@@ -67,6 +89,11 @@ export class Rooms {
     for (const room of this.rooms.values()) this.clearTimers(room);
     this.rooms.clear();
     this.roomOfPlayer.clear();
+  }
+
+  /** Resolves once every finished match so far has been written to the store. */
+  settled(): Promise<void> {
+    return this.writes;
   }
 
   // ---- connection lifecycle ----
@@ -97,13 +124,14 @@ export class Rooms {
 
   // ---- player actions ----
 
-  create(playerId: string) {
+  create(player: RoomEntrant) {
+    const playerId = player.id;
     this.leaveForNewRoom(playerId);
     const room: Room = {
       code: this.freshCode(),
       status: 'waiting',
       matchNumber: 0,
-      seats: [this.newSeat(playerId)],
+      seats: [this.newSeat(player)],
       rounds: [],
       result: null,
       ttlTimer: null,
@@ -114,7 +142,8 @@ export class Rooms {
     this.broadcast(room);
   }
 
-  join(playerId: string, rawCode: string) {
+  join(player: RoomEntrant, rawCode: string) {
+    const playerId = player.id;
     const code = rawCode.trim().toUpperCase();
     const room = this.rooms.get(code);
     if (!room) throw new RoomError('No room with that code');
@@ -124,7 +153,7 @@ export class Rooms {
     if (room.status !== 'waiting') throw new RoomError('That room is already full');
     this.leaveForNewRoom(playerId);
 
-    room.seats.push(this.newSeat(playerId));
+    room.seats.push(this.newSeat(player));
     this.roomOfPlayer.set(playerId, room);
     this.startMatch(room);
     // The inviter may have dropped while the share sheet was open; hold them to the same grace period.
@@ -183,10 +212,11 @@ export class Rooms {
 
   // ---- internals ----
 
-  private newSeat(playerId: string): Seat {
+  private newSeat(player: RoomEntrant): Seat {
     return {
-      playerId,
-      name: this.store.profile(playerId).name,
+      playerId: player.id,
+      name: player.name,
+      score: player.score,
       pick: null,
       roundWins: 0,
       wantsRematch: false,
@@ -239,22 +269,38 @@ export class Rooms {
   }
 
   private finish(room: Room, winner: number, reason: 'score' | 'forfeit') {
-    const loser = winner === 0 ? 1 : 0;
-    const change = this.store.recordPvpMatch(room.seats[winner].playerId, room.seats[loser].playerId);
     room.status = 'over';
-    room.result = {
-      winner,
-      reason,
-      scores: winner === 0 ? [change.winner, change.loser] : [change.loser, change.winner],
-    };
+    const scores = room.seats.map((seat, index): ScoreChange => {
+      const before = seat.score;
+      seat.score = scoreAfterMatch(before, index === winner);
+      return { before, after: seat.score };
+    });
+    room.result = { winner, reason, scores: [scores[0], scores[1]] };
     for (const seat of room.seats) {
       seat.pick = null;
       if (seat.forfeitTimer) clearTimeout(seat.forfeitTimer);
       seat.forfeitTimer = null;
-      this.send(seat.playerId, { t: 'profile', profile: this.store.profile(seat.playerId) });
     }
     this.expireAfter(room, this.timings.finishedRoomTtlMs);
     this.broadcast(room);
+    this.save(room.seats[winner].playerId, room.seats[winner === 0 ? 1 : 0].playerId);
+  }
+
+  /** Writes a finished match to the store, then sends both players their updated records. */
+  private save(winnerId: string, loserId: string) {
+    this.writes = this.writes
+      .then(async () => {
+        await this.store.recordPvpMatch(winnerId, loserId);
+        for (const playerId of [winnerId, loserId]) {
+          this.send(playerId, { t: 'profile', profile: await this.store.profile(playerId) });
+        }
+      })
+      .catch((error) => {
+        console.error('Could not save a finished match:', error);
+        for (const playerId of [winnerId, loserId]) {
+          this.send(playerId, { t: 'error', message: 'This result could not be saved' });
+        }
+      });
   }
 
   /** Takes a player out of a room that is not mid-match, deleting the room once nobody is left. */
@@ -298,11 +344,9 @@ export class Rooms {
     const other = index === 0 ? 1 : 0;
     const view = (seatIndex: number): RoomPlayer => {
       const seat = room.seats[seatIndex];
-      // During a match the score shown is the one each player walked in with.
-      const score = room.result ? room.result.scores[seatIndex].after : this.store.profile(seat.playerId).score;
       return {
         name: seat.name,
-        score,
+        score: seat.score,
         roundWins: seat.roundWins,
         picked: seat.pick !== null,
         connected: !seat.gone && this.isConnected(seat.playerId),

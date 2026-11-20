@@ -37,6 +37,10 @@ Run lint and typecheck before declaring any task done.
   protocol. The server runs these files directly with Node's type stripping, so no enums, and
   imports between shared files need the `.ts` extension.
 - `server/` is a separate Node package (own `package.json`). It is the only place score changes.
+  Storage is Postgres through the small `Db` interface in `db.ts`: a hosted database when
+  `DATABASE_URL` is set, an embedded one (PGlite) otherwise. Room logic (`rooms.ts`) stays
+  synchronous and in memory; finished matches are written in the background.
+- `render.yaml` deploys the server to Render.
 
 Run `npm test`, `npm run test:server` and `npm run typecheck` before declaring a task done.
 

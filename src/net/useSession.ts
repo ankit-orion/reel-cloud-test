@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 
 import type { Profile } from '../../shared/protocol';
 import { ApiError, api } from './api';
-import { DEFAULT_SERVER_URL, loadServerUrl, saveServerUrl } from './config';
+import { DEFAULT_SERVER_URL, isGameServer, loadServerUrl, saveServerUrl } from './config';
 
 const STORAGE_KEY = 'rps.session.v1';
 
@@ -96,7 +96,12 @@ export function useSession() {
   // player; the record is brought up to date in the background.
   useEffect(() => {
     void loadServerUrl()
-      .then(setServerUrl)
+      .then((url) => {
+        setServerUrl(url);
+        // Knock on the server right away: if it is asleep on a free host, it starts waking now
+        // rather than when the player first needs it.
+        void isGameServer(url);
+      })
       .then(load)
       .then((saved) => {
         setSession(saved ? { status: 'signedIn', ...saved } : { status: 'signedOut', notice: null });
