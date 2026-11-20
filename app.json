@@ -15,7 +15,8 @@
         "backgroundColor": "#7fdcf2",
         "foregroundImage": "./assets/android-icon-foreground.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.ankitorion.rockpaperscissors"
     },
     "web": {
       "favicon": "./assets/favicon.png",
@@ -23,7 +24,19 @@
       "themeColor": "#7fdcf2"
     },
     "plugins": [
-      "expo-font"
+      "expo-font",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true,
+            "buildArchs": [
+              "arm64-v8a",
+              "armeabi-v7a"
+            ]
+          }
+        }
+      ]
     ]
   }
 }

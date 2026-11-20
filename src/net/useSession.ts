@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 
 import type { Profile } from '../../shared/protocol';
 import { ApiError, api } from './api';
+import { DEFAULT_SERVER_URL, loadServerUrl, saveServerUrl } from './config';
 
 const STORAGE_KEY = 'rps.session.v1';
 
@@ -41,6 +42,7 @@ async function load(): Promise<SignedIn | null> {
 /** The player signed in on this device: who they are, their record, and keeping both in sync. */
 export function useSession() {
   const [session, setSession] = useState<Session>({ status: 'loading' });
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
   // The committed session, for callbacks that run later and must not see a stale one.
   const current = useRef(session);
   useLayoutEffect(() => {
@@ -90,11 +92,15 @@ export function useSession() {
     }
   }, [flushCpu, signOut, update]);
 
-  // Restore the saved player, then bring the record up to date in the background.
+  // Restore the server address first (so nothing talks to the wrong server), then the saved
+  // player; the record is brought up to date in the background.
   useEffect(() => {
-    void load().then((saved) => {
-      setSession(saved ? { status: 'signedIn', ...saved } : { status: 'signedOut', notice: null });
-    });
+    void loadServerUrl()
+      .then(setServerUrl)
+      .then(load)
+      .then((saved) => {
+        setSession(saved ? { status: 'signedIn', ...saved } : { status: 'signedOut', notice: null });
+      });
   }, []);
 
   const signedInToken = session.status === 'signedIn' ? session.token : null;
@@ -140,7 +146,20 @@ export function useSession() {
     [update],
   );
 
-  return { session, register, setProfile, recordCpuMatch, refresh, signOut };
+  /**
+   * Points the app at a different game server. A signed-in player is kept; if the new server
+   * turns out not to know them, the refresh signs them out with an explanation.
+   */
+  const changeServer = useCallback(
+    async (url: string) => {
+      await saveServerUrl(url);
+      setServerUrl(url);
+      void refresh();
+    },
+    [refresh],
+  );
+
+  return { session, serverUrl, register, setProfile, recordCpuMatch, refresh, signOut, changeServer };
 }
 
 /** A profile with not-yet-synced computer matches included, which is what the player should see. */

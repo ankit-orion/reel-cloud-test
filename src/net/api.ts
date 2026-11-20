@@ -1,5 +1,5 @@
 import type { LeaderboardResponse, Profile, RegisterResponse } from '../../shared/protocol';
-import { SERVER_URL } from './config';
+import { getServerUrl } from './config';
 
 const TIMEOUT_MS = 8000;
 
@@ -17,7 +17,7 @@ async function request<T>(method: 'GET' | 'POST', path: string, token?: string, 
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(SERVER_URL + path, {
+    response = await fetch(getServerUrl() + path, {
       method,
       signal: controller.signal,
       headers: {

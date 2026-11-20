@@ -55,6 +55,29 @@ works there).
 To play a friend match on your own, open the app on two devices (or a phone and a browser tab in a
 private window) and register a different name on each.
 
+### Changing the server from inside the app
+
+The address above is only the one built into the app. The name-entry screen and the Profile screen
+both have a **Game server** box where a player can type a different address (for example
+`192.168.1.20:8787`); the app checks that a game server answers there before switching. This is
+how an installed copy is pointed at your server without rebuilding it.
+
+## Building an installable Android app (APK)
+
+With the Android SDK and a JDK installed:
+
+```bash
+npx expo prebuild --platform android
+cd android && ./gradlew assembleRelease
+# -> android/app/build/outputs/apk/release/app-release.apk
+```
+
+Set `EXPO_PUBLIC_SERVER_URL` for that build to bake in your server's address. The `android/` folder
+is generated and not committed. This APK is signed with the debug key: fine for installing on your
+own phones, but the Play Store needs your own signing key (`npx eas-cli@latest build` handles that).
+The Android app allows plain `http://` so it can reach a server on your home network; use `https://`
+for a server on the internet, since the player's sign-in token travels with every request.
+
 ## Putting the server online
 
 Friends outside your Wi-Fi need the server on a public host. Any host that runs Node 22.18+ and

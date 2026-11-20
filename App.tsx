@@ -19,11 +19,12 @@ type Screen = 'home' | 'friend' | 'computer' | 'leaderboard' | 'profile';
 
 export default function App() {
   const [fontsLoaded] = useFonts({ PressStart2P_400Regular });
-  const { session, register, setProfile, recordCpuMatch, refresh, signOut } = useSession();
+  const { session, serverUrl, register, setProfile, recordCpuMatch, refresh, signOut, changeServer } = useSession();
   const [screen, setScreen] = useState<Screen>('home');
 
   const onAuthLost = useCallback(() => signOut('Your player was not found. Pick a name again.'), [signOut]);
-  const link = useRoom(session.status === 'signedIn' ? session.token : null, { onProfile: setProfile, onAuthLost });
+  const token = session.status === 'signedIn' ? session.token : null;
+  const link = useRoom(token, serverUrl, { onProfile: setProfile, onAuthLost });
   const { room, leave } = link;
 
   const goHome = useCallback(() => setScreen('home'), []);
@@ -47,7 +48,9 @@ export default function App() {
   if (!fontsLoaded || session.status === 'loading') {
     // Nothing is drawn until the pixel font and the saved player are ready, so neither pops in.
   } else if (session.status === 'signedOut') {
-    content = <Onboarding notice={session.notice} onRegister={register} />;
+    content = (
+      <Onboarding notice={session.notice} onRegister={register} serverUrl={serverUrl} onChangeServer={changeServer} />
+    );
   } else if (inMatch) {
     content = <OnlineGame room={room} link={link} onExit={leaveRoom} />;
   } else {
@@ -56,7 +59,17 @@ export default function App() {
     else if (screen === 'computer') {
       content = <CpuGame playerName={profile.name} onMatchEnd={recordCpuMatch} onExit={goHome} />;
     } else if (screen === 'leaderboard') content = <Leaderboard profile={profile} onBack={goHome} />;
-    else if (screen === 'profile') content = <ProfileScreen profile={profile} onRefresh={refresh} onBack={goHome} />;
+    else if (screen === 'profile') {
+      content = (
+        <ProfileScreen
+          profile={profile}
+          onRefresh={refresh}
+          onBack={goHome}
+          serverUrl={serverUrl}
+          onChangeServer={changeServer}
+        />
+      );
+    }
     else {
       content = (
         <Home

@@ -5,15 +5,18 @@ import { NAME_MAX_LENGTH, nameProblem } from '../../shared/protocol';
 import { ApiError } from '../net/api';
 import { SkyScene } from '../pixel/scenes';
 import { Panel, PixelButton, PixelInput, PixelText, palette } from '../pixel/ui';
+import { ServerSetting } from './ServerSetting';
 import { Title } from './Title';
 
 interface Props {
   /** Why the player is back here, if they had a profile before. */
   notice: string | null;
   onRegister: (name: string) => Promise<void>;
+  serverUrl: string;
+  onChangeServer: (url: string) => Promise<void>;
 }
 
-export function Onboarding({ notice, onRegister }: Props) {
+export function Onboarding({ notice, onRegister, serverUrl, onChangeServer }: Props) {
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,6 +66,7 @@ export function Onboarding({ notice, onRegister }: Props) {
             </View>
             <PixelButton label={busy ? 'SAVING...' : 'START'} testID="register" disabled={busy} onPress={submit} />
           </Panel>
+          <ServerSetting serverUrl={serverUrl} onChange={onChangeServer} style={styles.panel} />
         </ScrollView>
       </KeyboardAvoidingView>
     </SkyScene>

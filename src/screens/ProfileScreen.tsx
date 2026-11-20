@@ -8,15 +8,18 @@ import { TIER_COLORS, tierGem } from '../pixel/sprites';
 import { Sprite } from '../pixel/Sprite';
 import { Panel, PixelFrame, PixelText, palette } from '../pixel/ui';
 import { Header } from './Header';
+import { ServerSetting } from './ServerSetting';
 
 interface Props {
   profile: Profile;
   /** Ask the server for the latest record. */
   onRefresh: () => void;
   onBack: () => void;
+  serverUrl: string;
+  onChangeServer: (url: string) => Promise<void>;
 }
 
-export function ProfileScreen({ profile, onRefresh, onBack }: Props) {
+export function ProfileScreen({ profile, onRefresh, onBack, serverUrl, onChangeServer }: Props) {
   useEffect(() => {
     onRefresh();
   }, [onRefresh]);
@@ -75,6 +78,8 @@ export function ProfileScreen({ profile, onRefresh, onBack }: Props) {
             {`BEAT A REAL PLAYER: +${WIN_POINTS}. LOSE TO ONE: -${LOSS_POINTS}. COMPUTER MATCHES NEVER CHANGE YOUR SCORE.`}
           </PixelText>
         </Panel>
+
+        <ServerSetting serverUrl={serverUrl} onChange={onChangeServer} />
       </ScrollView>
     </SkyScene>
   );

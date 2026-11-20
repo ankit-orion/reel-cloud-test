@@ -3,7 +3,7 @@ import { AppState } from 'react-native';
 
 import type { ClientMessage, Profile, RoomSnapshot, ServerMessage } from '../../shared/protocol';
 import type { Move } from '../../shared/rules';
-import { SOCKET_URL } from './config';
+import { socketUrlFor } from './config';
 
 // Close codes sent by the server.
 const CLOSE_REPLACED = 4001;
@@ -22,7 +22,7 @@ interface Handlers {
  * The live connection used for friend matches. Reconnects on its own; the
  * server re-sends the full room on every connect, so nothing is lost by a drop.
  */
-export function useRoom(token: string | null, handlers: Handlers) {
+export function useRoom(token: string | null, serverUrl: string, handlers: Handlers) {
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +44,7 @@ export function useRoom(token: string | null, handlers: Handlers) {
       clearTimeout(retryTimer);
       replaced = false;
       setStatus('connecting');
-      const ws = new WebSocket(SOCKET_URL);
+      const ws = new WebSocket(socketUrlFor(serverUrl));
       socket = ws;
       ws.onopen = () => ws.send(JSON.stringify({ t: 'hello', token } satisfies ClientMessage));
       ws.onmessage = (event) => {
@@ -96,7 +96,7 @@ export function useRoom(token: string | null, handlers: Handlers) {
       setRoom(null);
       setError(null);
     };
-  }, [token]);
+  }, [token, serverUrl]);
 
   const send = useCallback((message: ClientMessage) => {
     setError(null);
